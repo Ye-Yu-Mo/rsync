@@ -65,13 +65,23 @@ function convertWindowsPath(filePath) {
 
 /**
  * Escapes a string to be safe for use as a shell argument.
- * Wraps in single quotes and escapes existing single quotes.
+ * - Unix: Wraps in single quotes and escapes existing single quotes
+ * - Windows: Wraps in double quotes and escapes double quotes and backslashes
  */
 function escapeShellArg(arg) {
   if (arg === undefined || arg === null) {
-    return "''";
+    return os.platform() === 'win32' ? '""' : "''";
   }
-  return "'" + String(arg).replace(/'/g, "'\\''") + "'";
+
+  const str = String(arg);
+
+  if (os.platform() === 'win32') {
+    // Windows: use double quotes, escape " and \
+    return '"' + str.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  } else {
+    // Unix: use single quotes, escape '
+    return "'" + str.replace(/'/g, "'\\''") + "'";
+  }
 }
 
 // Deprecated: Alias for compatibility, but prefer escapeShellArg
@@ -98,8 +108,13 @@ async function executeCommand(command, args, options = {}) {
   if (Array.isArray(args) && args.length === 2 && args[0] === '-c') {
     // We want to run in a shell.
     shellOption = true;
-    spawnCmd = '/bin/sh'; // Default for unix
-    spawnArgs = ['-c', args[1]];
+    if (os.platform() === 'win32') {
+      spawnCmd = 'cmd.exe';
+      spawnArgs = ['/c', args[1]];
+    } else {
+      spawnCmd = '/bin/sh';
+      spawnArgs = ['-c', args[1]];
+    }
   }
 
   return new Promise((resolve) => {
