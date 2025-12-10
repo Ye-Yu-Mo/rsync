@@ -20,7 +20,7 @@
         "Windows 路径转换：本地路径 C:\\foo\\bar → /c/foo/bar，远程路径保持原样",
         "处理路径空格：自动添加双引号包裹含空格的路径（本地和远程路径）"
       ],
-      "finish": false
+      "finish": true
     },
     "f3_task_edit_ui": {
       "core": "任务编辑页面（新建/编辑任务）",

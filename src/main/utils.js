@@ -1,6 +1,47 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
+
+function getBinPath() {
+  const platform = os.platform();
+  const isDev = process.env.NODE_ENV === 'development';
+
+  if (isDev) {
+    if (platform === 'win32') {
+      return path.join(__dirname, '../../resources/bin/windows');
+    } else if (platform === 'darwin') {
+      return path.join(__dirname, '../../resources/bin/macos');
+    }
+  } else {
+    const { app } = require('electron');
+    const resourcesPath = path.join(app.getAppPath(), 'resources', 'bin');
+
+    if (platform === 'win32') {
+      return path.join(resourcesPath, 'windows');
+    } else if (platform === 'darwin') {
+      return path.join(resourcesPath, 'macos');
+    }
+  }
+
+  return null;
+}
+
+function getCommandPath(command) {
+  const binPath = getBinPath();
+
+  if (binPath) {
+    const platform = os.platform();
+    const ext = platform === 'win32' ? '.exe' : '';
+    const fullPath = path.join(binPath, command + ext);
+
+    if (fs.existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  return command;
+}
 
 function convertWindowsPath(filePath) {
   if (os.platform() !== 'win32') {
@@ -28,7 +69,14 @@ function executeCommand(command, args, options = {}) {
     const timeout = options.timeout || 120000;
     const env = { ...process.env, ...options.env };
 
-    const proc = spawn(command, args, {
+    const binPath = getBinPath();
+    if (binPath && os.platform() === 'win32') {
+      env.PATH = `${binPath};${env.PATH}`;
+    }
+
+    const cmdPath = getCommandPath(command);
+
+    const proc = spawn(cmdPath, args, {
       env,
       shell: true,
       ...options.spawnOptions
@@ -82,7 +130,10 @@ function buildSSHCommand(config, remoteCommand) {
   const { remote_host, remote_port, username, password } = config;
   const port = remote_port || 22;
 
-  const sshCmd = `SSHPASS='${password}' sshpass -e ssh -p ${port} -o StrictHostKeyChecking=accept-new ${username}@${remote_host}`;
+  const sshpassPath = getCommandPath('sshpass');
+  const sshPath = getCommandPath('ssh');
+
+  const sshCmd = `SSHPASS='${password}' ${sshpassPath} -e ${sshPath} -p ${port} -o StrictHostKeyChecking=accept-new ${username}@${remote_host}`;
   return `${sshCmd} '${remoteCommand.replace(/'/g, "'\\''")}'`;
 }
 
@@ -96,5 +147,7 @@ module.exports = {
   quotePathIfNeeded,
   executeCommand,
   executeSSH,
-  buildSSHCommand
+  buildSSHCommand,
+  getCommandPath,
+  getBinPath
 };

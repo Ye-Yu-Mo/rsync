@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { executeCommand, executeSSH, convertWindowsPath, quotePathIfNeeded } = require('./utils');
+const { executeCommand, executeSSH, convertWindowsPath, quotePathIfNeeded, getCommandPath } = require('./utils');
 const { getDB } = require('../database/db');
 
 async function ensureRemoteDirs(config, remoteDir) {
@@ -20,12 +20,16 @@ async function syncWithRsync(task) {
   const localDirQuoted = quotePathIfNeeded(localDir);
   const remoteDirQuoted = quotePathIfNeeded(remoteDir);
 
+  const rsyncPath = getCommandPath('rsync');
+  const sshpassPath = getCommandPath('sshpass');
+  const sshPath = getCommandPath('ssh');
+
   let rsyncCmd;
   if (task.version_enabled) {
     const backupDir = `${remoteDirQuoted}/.versions/${timestamp}/`;
-    rsyncCmd = `SSHPASS='${task.password}' sshpass -e rsync -av -e 'ssh -p ${task.remote_port} -o StrictHostKeyChecking=accept-new' --backup --backup-dir="${backupDir}" "${localDirQuoted}/" ${task.username}@${task.remote_host}:"${remoteDirQuoted}"`;
+    rsyncCmd = `SSHPASS='${task.password}' ${sshpassPath} -e ${rsyncPath} -av -e '${sshPath} -p ${task.remote_port} -o StrictHostKeyChecking=accept-new' --backup --backup-dir="${backupDir}" "${localDirQuoted}/" ${task.username}@${task.remote_host}:"${remoteDirQuoted}"`;
   } else {
-    rsyncCmd = `SSHPASS='${task.password}' sshpass -e rsync -av -e 'ssh -p ${task.remote_port} -o StrictHostKeyChecking=accept-new' "${localDirQuoted}/" ${task.username}@${task.remote_host}:"${remoteDirQuoted}"`;
+    rsyncCmd = `SSHPASS='${task.password}' ${sshpassPath} -e ${rsyncPath} -av -e '${sshPath} -p ${task.remote_port} -o StrictHostKeyChecking=accept-new' "${localDirQuoted}/" ${task.username}@${task.remote_host}:"${remoteDirQuoted}"`;
   }
 
   const result = await executeCommand('sh', ['-c', rsyncCmd], { timeout: 300000 });
@@ -36,7 +40,10 @@ async function syncWithSftp(task) {
   const localDir = convertWindowsPath(task.local_dir);
   const remoteDir = task.remote_dir;
 
-  const sftpCmd = `echo 'put -r "${localDir}"/* "${remoteDir}/"' | SSHPASS='${task.password}' sshpass -e sftp -P ${task.remote_port} -o StrictHostKeyChecking=accept-new ${task.username}@${task.remote_host}`;
+  const sshpassPath = getCommandPath('sshpass');
+  const sftpPath = getCommandPath('sftp');
+
+  const sftpCmd = `echo 'put -r "${localDir}"/* "${remoteDir}/"' | SSHPASS='${task.password}' ${sshpassPath} -e ${sftpPath} -P ${task.remote_port} -o StrictHostKeyChecking=accept-new ${task.username}@${task.remote_host}`;
 
   const result = await executeCommand('sh', ['-c', sftpCmd], { timeout: 300000 });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('Z')[0];
