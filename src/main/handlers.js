@@ -1,17 +1,25 @@
 const { ipcMain } = require('electron');
-const { getDB } = require('../database/db');
+const { getDB, encryptPassword, decryptPassword } = require('../database/db');
 const fs = require('fs');
 const config = require('../config');
+
+function stripPassword(task) {
+  if (!task) return task;
+  const { password, ...rest } = task;
+  return rest;
+}
 
 function setupHandlers() {
   ipcMain.handle('get-tasks', () => {
     const db = getDB();
-    return db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all();
+    const tasks = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all();
+    return tasks.map(stripPassword);
   });
 
   ipcMain.handle('get-task', (event, id) => {
     const db = getDB();
-    return db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+    return stripPassword(task);
   });
 
   ipcMain.handle('create-task', (event, task) => {
@@ -28,12 +36,13 @@ function setupHandlers() {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    const encryptedPassword = encryptPassword(task.password);
     const result = stmt.run(
       task.name,
       task.remote_host,
       task.remote_port,
       task.username,
-      task.password,
+      encryptedPassword,
       task.local_dir,
       task.remote_dir,
       task.interval_minutes,
@@ -67,12 +76,13 @@ function setupHandlers() {
       WHERE id = ?
     `);
 
+    const encryptedPassword = encryptPassword(task.password);
     stmt.run(
       task.name,
       task.remote_host,
       task.remote_port,
       task.username,
-      task.password,
+      encryptedPassword,
       task.local_dir,
       task.remote_dir,
       task.interval_minutes,

@@ -1,6 +1,7 @@
 const { getDB } = require('../database/db');
 const { executeSync } = require('./executor');
 const { executeSSH, escapeShellArg, sendTaskUpdate, isTaskStale, releaseLock } = require('./utils');
+const { decryptPassword } = require('../database/db');
 const config = require('../config');
 
 const schedulers = new Map();
@@ -77,11 +78,12 @@ function loadAllSchedulers() {
 }
 
 async function cleanTrashForTask(task) {
+  const decryptedPassword = decryptPassword(task.password);
   const sshConfig = {
     remote_host: task.remote_host,
     remote_port: task.remote_port,
     username: task.username,
-    password: task.password
+    password: decryptedPassword
   };
 
   const versionsDir = `${task.remote_dir}/${config.paths.versionsDir}`;

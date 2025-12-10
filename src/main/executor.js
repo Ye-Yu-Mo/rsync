@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { executeCommand, executeSSH, convertWindowsPath, escapeShellArg, getCommandPath, sendTaskUpdate, sendTaskProgress, acquireLock } = require('./utils');
-const { getDB } = require('../database/db');
+const { getDB, decryptPassword } = require('../database/db');
 const config = require('../config');
 
 async function ensureRemoteDirs(sshConfig, remoteDir) {
@@ -148,12 +148,14 @@ async function executeSync(taskId) {
   let success = false;
   let output = '';
 
+  let decryptedPassword = null;
   try {
+    decryptedPassword = decryptPassword(task.password);
     const sshConfig = {
       remote_host: task.remote_host,
       remote_port: task.remote_port,
       username: task.username,
-      password: task.password
+      password: decryptedPassword
     };
 
     console.log(`Task ${taskId}: Ensuring remote directories...`);
@@ -162,26 +164,26 @@ async function executeSync(taskId) {
     let syncResult;
     try {
       console.log(`Task ${taskId}: Starting rsync...`);
-      syncResult = await syncWithRsync(task);
+      const taskWithDecryptedPassword = { ...task, password: decryptedPassword };
+      syncResult = await syncWithRsync(taskWithDecryptedPassword);
       output = syncResult.result.output;
       success = syncResult.result.success || syncResult.result.code === 0;
-      
+
       console.log(`Task ${taskId}: Rsync finished. Success: ${success}, Code: ${syncResult.result.code}`);
 
       if (!success) {
         throw new Error('rsync returned non-zero code');
       }
-      
+
       syncMode = 'rsync';
-      await cleanVersions(task);
+      await cleanVersions(taskWithDecryptedPassword);
       
     } catch (rsyncError) {
       console.warn('Rsync failed, attempting SFTP fallback:', rsyncError.message);
-      // Fallback to SFTP
-      // Note: SFTP does not support deletion or versioning in this implementation.
       try {
         console.log(`Task ${taskId}: Starting SFTP fallback...`);
-        syncResult = await syncWithSftp(task);
+        const taskWithDecryptedPassword = { ...task, password: decryptedPassword };
+        syncResult = await syncWithSftp(taskWithDecryptedPassword);
         output = `[WARNING: Rsync failed, fell back to SFTP. No deletion/versioning performed.]\n` + syncResult.result.output;
         success = syncResult.result.success || syncResult.result.code === 0;
         syncMode = 'sftp';
@@ -193,10 +195,13 @@ async function executeSync(taskId) {
 
     return { success, output, syncMode };
   } catch (error) {
-    // Propagate error but keep output for logging
     output = output || error.message;
     throw error;
   } finally {
+    if (decryptedPassword) {
+      decryptedPassword = null;
+    }
+
     const duration = Math.floor((Date.now() - runStartTime) / 1000);
     const status = success ? 'success' : 'fail';
     const failed = !success;

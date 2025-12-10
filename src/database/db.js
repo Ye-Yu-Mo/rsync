@@ -1,8 +1,48 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const { app } = require('electron');
+const crypto = require('crypto');
 
 let db;
+
+const keyHex = process.env.RSYNC_ENCRYPTION_KEY;
+if (!keyHex) {
+  console.error('\n错误: RSYNC_ENCRYPTION_KEY环境变量未设置');
+  console.error('密码加密需要64字符的hex密钥（32字节）');
+  console.error('生成方式: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+  console.error('设置方式: export RSYNC_ENCRYPTION_KEY=<生成的密钥>\n');
+  throw new Error('RSYNC_ENCRYPTION_KEY未设置，应用无法启动');
+}
+if (keyHex.length !== 64) {
+  throw new Error(`RSYNC_ENCRYPTION_KEY长度错误: 需要64字符，当前${keyHex.length}字符`);
+}
+const key = Buffer.from(keyHex, 'hex');
+
+function encryptPassword(plaintext) {
+  if (!plaintext) return plaintext;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `v1:${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+function decryptPassword(stored) {
+  if (!stored || !stored.startsWith('v1:')) return stored;
+  try {
+    const [, ivHex, tagHex, dataHex] = stored.split(':');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(dataHex, 'hex')),
+      decipher.final(),
+    ]);
+    return decrypted.toString('utf8');
+  } catch (error) {
+    console.error('密码解密失败:', error.message);
+    throw new Error('密码解密失败，请检查RSYNC_ENCRYPTION_KEY是否正确');
+  }
+}
 
 function init() {
   const dbPath = path.join(app.getPath('userData'), 'rsync.db');
@@ -59,6 +99,24 @@ function init() {
     console.error('Migration failed:', error);
   }
 
+  // 3. Migration: Encrypt plaintext passwords
+  try {
+    const rows = db.prepare('SELECT id, password FROM tasks').all();
+    let encryptedCount = 0;
+    for (const row of rows) {
+      if (row.password && !row.password.startsWith('v1:')) {
+        const encrypted = encryptPassword(row.password);
+        db.prepare('UPDATE tasks SET password = ? WHERE id = ?').run(encrypted, row.id);
+        encryptedCount++;
+      }
+    }
+    if (encryptedCount > 0) {
+      console.log(`已加密 ${encryptedCount} 个明文密码`);
+    }
+  } catch (error) {
+    console.error('密码加密迁移失败:', error);
+  }
+
   return db;
 }
 
@@ -71,5 +129,7 @@ function getDB() {
 
 module.exports = {
   init,
-  getDB
+  getDB,
+  encryptPassword,
+  decryptPassword
 };
