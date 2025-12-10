@@ -38,11 +38,7 @@ jobs:
         with:
           name: rsync-dist-${{ matrix.os }}
           path: |
-            dist/*.dmg
-            dist/*.zip
-            dist/*.exe
-            dist/*.blockmap
-            dist/*.yml
+            dist/
             !dist/mac/**
             !dist/win-unpacked/**
             !dist/mac-arm64/**

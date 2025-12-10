@@ -12,6 +12,10 @@ extraResources:
     to: "bin"
     filter:
       - "**/*"
+publish:
+  provider: github
+  owner: Ye-Yu-Mo
+  repo: rsync
 mac:
   target: 
     - target: dmg
