@@ -1,32 +1,170 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 const { app } = require('electron');
 const crypto = require('crypto');
 
 let db;
 
-let keyHex = process.env.RSYNC_ENCRYPTION_KEY;
-const isDevelopment = process.env.NODE_ENV === 'development';
+function getKeyFilePath() {
+  const userDataPath = app.getPath('userData');
+  try {
+    fs.mkdirSync(userDataPath, { recursive: true, mode: 0o700 });
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+  }
+  return path.join(userDataPath, 'encryption.key');
+}
 
-if (!keyHex) {
-  if (isDevelopment) {
-    keyHex = crypto.randomBytes(32).toString('hex');
-    console.warn('\n警告: 开发模式未设置RSYNC_ENCRYPTION_KEY，使用临时密钥');
-    console.warn('临时密钥: ' + keyHex);
-    console.warn('重启后所有加密数据将无法解密');
-    console.warn('生产环境请设置: export RSYNC_ENCRYPTION_KEY=<64字符hex密钥>\n');
-  } else {
-    console.error('\n错误: RSYNC_ENCRYPTION_KEY环境变量未设置');
-    console.error('密码加密需要64字符的hex密钥（32字节）');
-    console.error('生成方式: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
-    console.error('设置方式: export RSYNC_ENCRYPTION_KEY=<生成的密钥>\n');
-    throw new Error('RSYNC_ENCRYPTION_KEY未设置，应用无法启动');
+function validateKeyHex(keyHex, source) {
+  if (!keyHex || keyHex.length !== 64 || !/^[0-9a-f]{64}$/i.test(keyHex)) {
+    throw new Error(`Invalid encryption key from ${source}: must be 64 hex characters`);
+  }
+  return Buffer.from(keyHex, 'hex');
+}
+
+function readKeyFile(keyPath) {
+  try {
+    let keyHex = fs.readFileSync(keyPath, 'utf8');
+    keyHex = keyHex.replace(/^\uFEFF/, '');
+    keyHex = keyHex.replace(/[\r\n\s]/g, '');
+
+    if (process.platform !== 'win32') {
+      const stats = fs.statSync(keyPath);
+      const mode = stats.mode & 0o777;
+      if (mode !== 0o600) {
+        console.warn(`Warning: ${keyPath} has insecure permissions ${mode.toString(8)}, should be 600`);
+      }
+    }
+
+    return validateKeyHex(keyHex, keyPath);
+
+  } catch (err) {
+    const cpCmd = process.platform === 'win32'
+      ? `copy "${keyPath}.backup" "${keyPath}"`
+      : `cp "${keyPath}.backup" "${keyPath}"`;
+
+    throw new Error(
+      `Failed to read encryption key from ${keyPath}: ${err.message}\n` +
+      `Recovery options:\n` +
+      `  1. Restore from backup: ${cpCmd}\n` +
+      `  2. Reset (ALL PASSWORDS LOST): delete ${keyPath} and restart\n` +
+      `  3. Set environment variable: export RSYNC_ENCRYPTION_KEY=<your-key>`
+    );
   }
 }
-if (keyHex.length !== 64) {
-  throw new Error(`RSYNC_ENCRYPTION_KEY长度错误: 需要64字符，当前${keyHex.length}字符`);
+
+function generateAndPersist(keyPath) {
+  const lockPath = keyPath + '.lock';
+  let lockFd;
+
+  try {
+    lockFd = fs.openSync(lockPath, 'wx');
+
+    if (fs.existsSync(keyPath)) {
+      fs.closeSync(lockFd);
+      fs.unlinkSync(lockPath);
+      return readKeyFile(keyPath);
+    }
+
+    const keyHex = crypto.randomBytes(32).toString('hex');
+    const tmpPath = keyPath + '.tmp';
+
+    try {
+      fs.writeFileSync(tmpPath, keyHex, { mode: 0o600 });
+
+      if (process.platform === 'win32') {
+        const { execSync } = require('child_process');
+        try {
+          execSync(`icacls "${tmpPath}" /inheritance:r /grant:r "%USERNAME%:(F)"`, { stdio: 'ignore' });
+        } catch (err) {
+          console.warn('Failed to set Windows ACL on key file:', err.message);
+        }
+      }
+
+      fs.renameSync(tmpPath, keyPath);
+
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      throw err;
+    }
+
+    const backupPath = keyPath + '.backup';
+    if (!fs.existsSync(backupPath)) {
+      fs.copyFileSync(keyPath, backupPath);
+    }
+
+    if (process.platform !== 'win32') {
+      fs.chmodSync(backupPath, 0o600);
+    } else {
+      const { execSync } = require('child_process');
+      try {
+        execSync(`icacls "${backupPath}" /inheritance:r /grant:r "%USERNAME%:(F)"`, { stdio: 'ignore' });
+        execSync(`attrib +h "${keyPath}"`, { stdio: 'ignore' });
+        execSync(`attrib +h "${backupPath}"`, { stdio: 'ignore' });
+      } catch (err) {
+        console.warn('Failed to secure backup on Windows:', err.message);
+      }
+    }
+
+    fs.closeSync(lockFd);
+    fs.unlinkSync(lockPath);
+
+    console.log('\n==========================================================');
+    console.log('IMPORTANT: New encryption key generated');
+    console.log(`Location: ${keyPath}`);
+    console.log(`Backup:   ${backupPath}`);
+    console.log('==========================================================');
+    console.log('BACKUP THESE FILES IMMEDIATELY to prevent data loss!');
+    console.log('If lost, all saved passwords will be unrecoverable.');
+    console.log('==========================================================\n');
+
+    return Buffer.from(keyHex, 'hex');
+
+  } catch (err) {
+    if (lockFd !== undefined) {
+      try { fs.closeSync(lockFd); } catch {}
+      try { fs.unlinkSync(lockPath); } catch {}
+    }
+
+    if (err.code === 'EEXIST') {
+      let attempts = 0;
+      while (attempts < 50) {
+        if (fs.existsSync(keyPath)) {
+          return readKeyFile(keyPath);
+        }
+        const start = Date.now();
+        while (Date.now() - start < 100) {}
+        attempts++;
+      }
+      throw new Error('Timeout waiting for encryption key generation by another process');
+    }
+
+    const errMsg = err.code === 'ENOSPC'
+      ? 'Disk full - free up space and restart'
+      : `Check directory permissions: ls -ld ${path.dirname(keyPath)}`;
+
+    throw new Error(
+      `Failed to generate encryption key at ${keyPath}: ${err.message}\n${errMsg}`
+    );
+  }
 }
-const key = Buffer.from(keyHex, 'hex');
+
+function loadEncryptionKey() {
+  if (process.env.RSYNC_ENCRYPTION_KEY) {
+    return validateKeyHex(process.env.RSYNC_ENCRYPTION_KEY, 'environment variable');
+  }
+
+  const keyPath = getKeyFilePath();
+
+  if (fs.existsSync(keyPath)) {
+    return readKeyFile(keyPath);
+  }
+
+  return generateAndPersist(keyPath);
+}
+
+const key = loadEncryptionKey();
 
 function encryptPassword(plaintext) {
   if (!plaintext) return plaintext;

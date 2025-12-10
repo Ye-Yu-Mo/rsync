@@ -1,4 +1,32 @@
 {
+  "fix_encryption_key_ux": {
+    "core": "密钥自动生成+持久化 - 解决普通用户无法启动应用的问题",
+    "priority": "P0",
+    "files": ["src/database/db.js"],
+    "approach": "1) 首次启动时自动生成密钥；2) 持久化到 app.getPath('userData')/encryption.key，权限600；3) 环境变量RSYNC_ENCRYPTION_KEY作为覆盖选项（企业场景）；4) 读取失败时fail-fast并给出明确错误；5) 提供密钥重新生成机制（可选，后续版本）。",
+    "dependencies": [],
+    "risks": [
+      "密钥文件权限设置失败导致泄露",
+      "首次启动生成密钥时出错导致应用无法启动",
+      "密钥文件损坏/删除导致所有加密密码不可解",
+      "多用户共享系统时密钥隔离问题"
+    ],
+    "test_points": [
+      "首次启动时自动生成密钥并持久化",
+      "第二次启动读取已有密钥正常解密",
+      "环境变量优先级高于文件",
+      "密钥文件权限为600（Unix）或等效保护（Windows）",
+      "密钥损坏时给出清晰错误提示"
+    ],
+    "edge_cases": [
+      "userData目录不存在或无写权限",
+      "密钥文件被手动修改/截断",
+      "跨平台迁移时密钥文件路径差异",
+      "容器/沙箱环境下文件权限限制"
+    ],
+    "finish": true,
+    "notes": "已实现文件锁防并发、Windows icacls权限、BOM清理、自动备份。已知限制：密钥导出/导入UI功能待后续版本实现"
+  },
   "fix_detached_process": {
     "core": "修复脱管子进程问题 - 取消detached模式，启动时检查PID有效性而不是无脑清零",
     "priority": "P0",
