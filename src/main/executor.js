@@ -14,7 +14,7 @@ async function ensureRemoteDirs(config, remoteDir) {
 
 async function syncWithRsync(task) {
   const localDir = convertWindowsPath(task.local_dir);
-  const remoteDir = task.remote_dir;
+  const remoteDir = task.remote_dir.replace(/\/+$/, ''); // 移除末尾斜杠
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('Z')[0];
 
   const localDirQuoted = quotePathIfNeeded(localDir);
@@ -27,9 +27,9 @@ async function syncWithRsync(task) {
   let rsyncCmd;
   if (task.version_enabled) {
     const backupDir = `${remoteDirQuoted}/.versions/${timestamp}/`;
-    rsyncCmd = `SSHPASS='${task.password}' ${sshpassPath} -e ${rsyncPath} -av -e '${sshPath} -p ${task.remote_port} -o StrictHostKeyChecking=accept-new' --backup --backup-dir="${backupDir}" "${localDirQuoted}/" ${task.username}@${task.remote_host}:"${remoteDirQuoted}"`;
+    rsyncCmd = `SSHPASS='${task.password}' ${sshpassPath} -e ${rsyncPath} -av -e '${sshPath} -p ${task.remote_port} -o StrictHostKeyChecking=accept-new' --backup --backup-dir="${backupDir}" "${localDirQuoted}/" ${task.username}@${task.remote_host}:"${remoteDirQuoted}/" 2>&1`;
   } else {
-    rsyncCmd = `SSHPASS='${task.password}' ${sshpassPath} -e ${rsyncPath} -av -e '${sshPath} -p ${task.remote_port} -o StrictHostKeyChecking=accept-new' "${localDirQuoted}/" ${task.username}@${task.remote_host}:"${remoteDirQuoted}"`;
+    rsyncCmd = `SSHPASS='${task.password}' ${sshpassPath} -e ${rsyncPath} -av -e '${sshPath} -p ${task.remote_port} -o StrictHostKeyChecking=accept-new' "${localDirQuoted}/" ${task.username}@${task.remote_host}:"${remoteDirQuoted}/" 2>&1`;
   }
 
   const result = await executeCommand('sh', ['-c', rsyncCmd], { timeout: 300000 });

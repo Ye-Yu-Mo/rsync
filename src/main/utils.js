@@ -1,7 +1,10 @@
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const util = require('util');
+
+const execPromise = util.promisify(exec);
 
 function getBinPath() {
   const platform = os.platform();
@@ -64,66 +67,50 @@ function quotePathIfNeeded(filePath) {
   return filePath;
 }
 
-function executeCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const timeout = options.timeout || 120000;
-    const env = { ...process.env, ...options.env };
+async function executeCommand(command, args, options = {}) {
+  const timeout = options.timeout || 120000;
+  const env = { ...process.env, ...options.env };
 
-    const binPath = getBinPath();
-    if (binPath && os.platform() === 'win32') {
-      env.PATH = `${binPath};${env.PATH}`;
-    }
+  const binPath = getBinPath();
+  if (binPath && os.platform() === 'win32') {
+    env.PATH = `${binPath};${env.PATH}`;
+  }
 
-    const cmdPath = getCommandPath(command);
+  const cmdString = Array.isArray(args) && args.length === 2 && args[0] === '-c'
+    ? args[1]
+    : `${command} ${args.join(' ')}`;
 
-    const proc = spawn(cmdPath, args, {
+  try {
+    const { stdout, stderr } = await execPromise(cmdString, {
+      timeout,
       env,
-      shell: true,
-      ...options.spawnOptions
+      maxBuffer: 10 * 1024 * 1024,
+      shell: '/bin/sh'
     });
 
-    let stdout = '';
-    let stderr = '';
-    let killed = false;
+    const output = (stdout + stderr).substring(0, 10240);
 
-    const timer = setTimeout(() => {
-      killed = true;
-      proc.kill('SIGTERM');
-      setTimeout(() => proc.kill('SIGKILL'), 5000);
-    }, timeout);
+    return {
+      code: 0,
+      stdout,
+      stderr,
+      output,
+      success: true
+    };
+  } catch (error) {
+    const stdout = error.stdout || '';
+    const stderr = error.stderr || '';
+    const output = (stdout + stderr).substring(0, 10240);
+    const code = error.code || 1;
 
-    proc.stdout?.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr?.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on('error', (error) => {
-      clearTimeout(timer);
-      reject(new Error(`Command execution failed: ${error.message}`));
-    });
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-
-      if (killed) {
-        reject(new Error(`Command timed out after ${timeout}ms`));
-        return;
-      }
-
-      const output = (stdout + stderr).substring(0, 10240);
-
-      resolve({
-        code,
-        stdout,
-        stderr,
-        output,
-        success: code === 0
-      });
-    });
-  });
+    return {
+      code,
+      stdout,
+      stderr,
+      output,
+      success: false
+    };
+  }
 }
 
 function buildSSHCommand(config, remoteCommand) {
