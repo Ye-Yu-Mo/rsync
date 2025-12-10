@@ -18,9 +18,16 @@ mac:
       arch: 
         - x64
         - arm64
+    - target: zip
+      arch: 
+        - x64
+        - arm64
   identity: null # Disable signing verification requirement for local/CI builds without certs
 win:
-  target: nsis
+  target:
+    - target: nsis
+    - target: portable
+    - target: zip
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

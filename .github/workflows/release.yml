@@ -31,3 +31,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run build -- --publish always
+
+      - name: Upload Artifacts
+        if: always() # Upload even if publish fails, but usually we want it on success. 'always()' is safer for debugging.
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsync-dist-${{ matrix.os }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+            dist/*.blockmap
+            dist/*.yml
+            !dist/mac/**
+            !dist/win-unpacked/**
+            !dist/mac-arm64/**
