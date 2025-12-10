@@ -137,12 +137,6 @@ async function syncWithRsync(task) {
 
   const rsyncCmd = `SSHPASS=${escapeShellArg(task.password)} ${escapeShellArg(sshpassPath)} -e ${escapeShellArg(rsyncPath)} ${rsyncArgs.join(' ')} -e ${rshCmdQuoted} ${localDirQuoted} ${task.username}@${task.remote_host}:${remoteDirQuoted} 2>&1`;
 
-  console.log(`Task ${task.id}: Executing rsync command:`);
-  console.log(`rsyncPath: ${rsyncPath}`);
-  console.log(`sshpassPath: ${sshpassPath}`);
-  console.log(`sshPath: ${sshPath}`);
-  console.log(`Full command: ${rsyncCmd}`);
-
   const result = await executeCommand('sh', ['-c', rsyncCmd], {
     timeout: config.timeouts.rsync,
     onOutput: onOutput
