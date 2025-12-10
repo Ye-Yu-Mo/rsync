@@ -216,7 +216,24 @@ async function executeSync(taskId) {
 
   let decryptedPassword = null;
   try {
-    decryptedPassword = decryptPassword(task.password);
+    try {
+      decryptedPassword = decryptPassword(task.password);
+    } catch (decryptError) {
+      console.error(`Task ${taskId}: Password decryption failed, clearing password and disabling task`);
+
+      db.prepare(`
+        UPDATE tasks
+        SET password = NULL, enabled = 0, is_running = 0
+        WHERE id = ?
+      `).run(taskId);
+
+      throw new Error(
+        '密钥已更换，旧密码无法解密。\n' +
+        '任务已自动禁用，密码已清空。\n' +
+        '请重新编辑任务并设置密码。'
+      );
+    }
+
     const sshConfig = {
       remote_host: task.remote_host,
       remote_port: task.remote_port,
