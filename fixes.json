@@ -49,7 +49,7 @@
   "fix_versions_trash_separation": {
     "core": "拆分.versions和.trash目录 - 按PRD实现两个独立目录与清理策略",
     "priority": "P1",
-    "files": ["src/main/executor.js", "src/main/scheduler.js"],
+    "files": ["src/main/executor.js", "src/main/scheduler.js", "src/config.js"],
     "approach": "1) 在config中定义versions_dir/trash_dir，启动时确保存在；2) rsync --backup-dir指向versions/{taskId}/timestamp，删除操作写入trash；3) versions清理按时间戳保留最新10个；4) trash按mtime清理>90天，避免与运行中任务并发；5) 全部路径用path.join并记录操作日志。",
     "dependencies": ["centralize_config"],
     "risks": [
@@ -67,7 +67,8 @@
       "部分失败留下临时文件需要兜底删除",
       "任务同名/同id目录冲突"
     ],
-    "finish": false
+    "finish": true,
+    "notes": "已实现trash机制（SSH diff + mv），修复命令注入、批量炸弹、find跨平台兼容等安全问题。已知限制：不处理大小写差异（Windows→Linux同步时可能误判）"
   },
   "fix_lock_atomicity": {
     "core": "修复锁的原子性 - 使用SQLite事务或任务队列",
@@ -114,7 +115,8 @@
       "密钥轮换后旧记录向后兼容或有迁移路径",
       "损坏/空密码字段的处理"
     ],
-    "finish": false
+    "finish": true,
+    "notes": "已实现AES-256-GCM加密存储、handlers脱敏、执行时零化（commit d05080e）"
   },
   "centralize_config": {
     "core": "配置集中化 - 提取所有魔法数到config.js",

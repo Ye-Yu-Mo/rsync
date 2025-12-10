@@ -5,7 +5,7 @@ const { getDB, decryptPassword } = require('../database/db');
 const config = require('../config');
 
 async function ensureRemoteDirs(sshConfig, remoteDir) {
-  const cmd = `mkdir -p ${escapeShellArg(remoteDir)} ${escapeShellArg(remoteDir + '/' + config.paths.versionsDir)}`;
+  const cmd = `mkdir -p ${escapeShellArg(remoteDir)} ${escapeShellArg(remoteDir + '/' + config.paths.versionsDir)} ${escapeShellArg(remoteDir + '/' + config.paths.trashDir)}`;
   const result = await executeSSH(sshConfig, cmd, config.timeouts.sshMkdir);
 
   if (!result.success) {
@@ -13,70 +13,136 @@ async function ensureRemoteDirs(sshConfig, remoteDir) {
   }
 }
 
+function getLocalFileList(localDir) {
+  const files = [];
+  const queue = ['.'];
+
+  while (queue.length > 0) {
+    const rel = queue.shift();
+    const abs = path.join(localDir, rel);
+
+    try {
+      const entries = fs.readdirSync(abs, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const relPath = rel === '.' ? entry.name : `${rel}/${entry.name}`;
+        if (entry.isDirectory()) {
+          queue.push(relPath);
+        } else if (entry.isFile()) {
+          files.push(relPath);
+        }
+      }
+    } catch (error) {
+      console.warn(`Skipping directory ${abs}: ${error.message}`);
+    }
+  }
+
+  return files.map(f => f.replace(/\\/g, '/'));
+}
+
+async function getRemoteFileList(sshConfig, remoteDir) {
+  const findCmd = `cd ${escapeShellArg(remoteDir)} && find . -type f ! -path "./${config.paths.versionsDir}/*" ! -path "./${config.paths.trashDir}/*" | sed 's|^./||'`;
+  const result = await executeSSH(sshConfig, findCmd, config.timeouts.sshFind);
+
+  if (!result.success) {
+    throw new Error(`Failed to list remote files: ${result.output}`);
+  }
+
+  return result.output.split('\n').filter(f => f.trim() !== '');
+}
+
+async function moveFilesToTrash(sshConfig, remoteDir, files, timestamp) {
+  if (files.length === 0) {
+    return;
+  }
+
+  const trashBase = `${remoteDir}/${config.paths.trashDir}/${timestamp}`;
+  const commands = [];
+
+  for (const file of files) {
+    const fileDir = path.posix.dirname(file);
+    const trashTargetDir = fileDir === '.' ? trashBase : `${trashBase}/${fileDir}`;
+    const srcPath = `${escapeShellArg(remoteDir)}/${escapeShellArg(file)}`;
+    const dstPath = `${escapeShellArg(trashBase)}/${escapeShellArg(file)}`;
+    commands.push(`mkdir -p ${escapeShellArg(trashTargetDir)} && mv ${srcPath} ${dstPath}`);
+  }
+
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < commands.length; i += BATCH_SIZE) {
+    const batch = commands.slice(i, i + BATCH_SIZE);
+    const batchCmd = batch.join(' && ');
+    const result = await executeSSH(sshConfig, batchCmd, config.timeouts.sshTrashMove);
+
+    if (!result.success) {
+      throw new Error(`Trash batch ${Math.floor(i / BATCH_SIZE)} failed: ${result.output}`);
+    }
+  }
+}
+
 async function syncWithRsync(task) {
   const localDir = convertWindowsPath(task.local_dir);
-  // Remove trailing slashes from remoteDir to ensure consistent path handling
   const remoteDir = task.remote_dir.replace(/\/+$/, '');
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('Z')[0];
+  const timestamp = `${new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('Z')[0]}_${process.hrtime.bigint()}`;
 
-  const localDirQuoted = escapeShellArg(localDir + '/'); // Trailing slash important for rsync
+  const sshConfig = {
+    remote_host: task.remote_host,
+    remote_port: task.remote_port,
+    username: task.username,
+    password: task.password
+  };
+
+  if (task.trash_enabled) {
+    const remoteFiles = await getRemoteFileList(sshConfig, remoteDir);
+    const localFiles = getLocalFileList(task.local_dir);
+    const localSet = new Set(localFiles);
+    const toTrash = remoteFiles.filter(f => !localSet.has(f));
+
+    if (toTrash.length > 0) {
+      console.log(`Moving ${toTrash.length} files to trash...`);
+      await moveFilesToTrash(sshConfig, remoteDir, toTrash, timestamp);
+    }
+  }
+
+  const localDirQuoted = escapeShellArg(localDir + '/');
   const remoteDirQuoted = escapeShellArg(remoteDir + '/');
-
-  const backupDir = `${remoteDir}/${config.paths.versionsDir}/${timestamp}`;
-  const backupDirQuoted = escapeShellArg(backupDir);
 
   const rsyncPath = getCommandPath('rsync');
   const sshpassPath = getCommandPath('sshpass');
   const sshPath = getCommandPath('ssh');
 
-  // Build the SSH command for rsync to use
-  // We must strictly quote the password in the environment variable, but sshpass takes it from env.
-  // executeCommand handles env vars safely.
-  
   const rshCmd = `${sshPath} -p ${task.remote_port} -o StrictHostKeyChecking=accept-new`;
   const rshCmdQuoted = escapeShellArg(rshCmd);
 
-  let rsyncArgs = [
+  const rsyncArgs = [
     '-avz',
     '--delete',
     '--force',
     `--exclude=${config.paths.versionsDir}`,
+    `--exclude=${config.paths.trashDir}`,
     '--progress',
   ];
 
-  if (task.version_enabled || task.trash_enabled) {
-    rsyncArgs.push('--backup');
-    rsyncArgs.push(`--backup-dir=${backupDirQuoted}`);
+  if (task.version_enabled) {
+    const versionBackupDir = `${remoteDir}/${config.paths.versionsDir}/${timestamp}`;
+    const versionBackupDirQuoted = escapeShellArg(versionBackupDir);
+    rsyncArgs.push('--backup', `--backup-dir=${versionBackupDirQuoted}`);
   }
 
-  // Construct the full command string
-  // Note: We use localDirQuoted and remoteDirQuoted which are already strictly escaped strings.
-  // We use SSHPASS env var for security (avoiding password in process list argument, though still visible in env if inspected)
-  const rsyncCmd = `SSHPASS=${escapeShellArg(task.password)} ${sshpassPath} -e ${rsyncPath} ${rsyncArgs.join(' ')} -e ${rshCmdQuoted} ${localDirQuoted} ${task.username}@${task.remote_host}:${remoteDirQuoted} 2>&1`;
-
-  // console.log('Executing rsync:', rsyncCmd); // Debug log (remove in prod)
-
   const onOutput = (data) => {
-    // Parse rsync progress
-    // Example: 73159456  28%   43.46kB/s    1:09:49
-    // Regex matches: bytes, percent, speed, time
     const matches = data.match(/(\d{1,3}%)\s+([0-9.]+[a-zA-Z]+\/s)/);
     if (matches) {
-      const percent = matches[1];
-      const speed = matches[2];
-      sendTaskProgress(task.id, { percent, speed });
+      sendTaskProgress(task.id, { percent: matches[1], speed: matches[2] });
     }
   };
+
+  const rsyncCmd = `SSHPASS=${escapeShellArg(task.password)} ${sshpassPath} -e ${rsyncPath} ${rsyncArgs.join(' ')} -e ${rshCmdQuoted} ${localDirQuoted} ${task.username}@${task.remote_host}:${remoteDirQuoted} 2>&1`;
 
   const result = await executeCommand('sh', ['-c', rsyncCmd], {
     timeout: config.timeouts.rsync,
     onOutput: onOutput
   });
-  
-  // Rsync code 24 means "Partial transfer due to vanished source files"
-  // This is common during live syncs and should be treated as success (or at least partial success).
+
   if (result.code === 24) {
-    console.log('Rsync returned code 24 (vanished files), treating as success.');
     result.code = 0;
     result.success = true;
   }
@@ -106,7 +172,7 @@ async function syncWithSftp(task) {
 }
 
 async function cleanVersions(task) {
-  if (!task.version_enabled && !task.trash_enabled) {
+  if (!task.version_enabled) {
     return;
   }
 
