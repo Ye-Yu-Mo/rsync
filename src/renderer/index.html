@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>rsync - 跨平台任务同步工具</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <div id="task-list-view">
+      <h1>任务管理</h1>
+      <button id="new-task-btn">新建任务</button>
+      <table id="tasks-table">
+        <thead>
+          <tr>
+            <th>任务名称</th>
+            <th>上次同步时间</th>
+            <th>同步状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="tasks-tbody"></tbody>
+      </table>
+    </div>
+
+    <div id="task-edit-view" style="display: none;">
+      <h1 id="edit-title">新建任务</h1>
+      <form id="task-form">
+        <input type="hidden" id="task-id">
+
+        <label>任务名称:
+          <input type="text" id="task-name" required>
+        </label>
+
+        <label>远程 IP:
+          <input type="text" id="remote-host" required>
+        </label>
+
+        <label>远程端口:
+          <input type="number" id="remote-port" value="22" min="1" max="65535" required>
+        </label>
+
+        <label>用户名:
+          <input type="text" id="username" required>
+        </label>
+
+        <label>密码:
+          <input type="password" id="password" required>
+        </label>
+
+        <label>本地目录:
+          <input type="text" id="local-dir" required>
+        </label>
+
+        <label>远程目录:
+          <input type="text" id="remote-dir" required>
+        </label>
+
+        <label>同步间隔（分钟）:
+          <input type="number" id="interval" value="60" min="1" required>
+        </label>
+
+        <label>
+          <input type="checkbox" id="version-enabled" checked>
+          启用版本保留（10个版本）
+        </label>
+
+        <label>
+          <input type="checkbox" id="trash-enabled" checked>
+          启用 Trash 机制
+        </label>
+
+        <div class="form-actions">
+          <button type="button" id="test-conn-btn">测试连接</button>
+          <button type="submit">保存任务</button>
+          <button type="button" id="cancel-btn">取消</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="log-view" style="display: none;">
+      <h1>任务日志</h1>
+      <button id="close-log-btn">关闭</button>
+      <div id="logs-container"></div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

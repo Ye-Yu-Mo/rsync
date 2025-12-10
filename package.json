@@ -1,0 +1,26 @@
+{
+  "name": "rsync",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "NODE_ENV=development electron ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ye-Yu-Mo/rsync.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Ye-Yu-Mo/rsync/issues"
+  },
+  "homepage": "https://github.com/Ye-Yu-Mo/rsync#readme",
+  "dependencies": {
+    "better-sqlite3": "^12.5.0",
+    "electron": "^39.2.6"
+  }
+}

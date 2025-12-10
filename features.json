@@ -1,0 +1,132 @@
+{
+  "project_overview": "基于 rsync 的跨平台任务同步工具（本地→远程单向同步）",
+  "tech_stack": "Electron + Node.js + SQLite + rsync",
+  "features": {
+    "f1_project_scaffold": {
+      "core": "项目脚手架搭建：Electron + Node.js + SQLite 基础结构",
+      "details": [
+        "Electron 主进程/渲染进程结构",
+        "SQLite 数据库初始化（任务表、日志表）",
+        "基本窗口管理"
+      ],
+      "finish": true
+    },
+    "f2_rsync_bundling": {
+      "core": "Windows 平台内置 rsync.exe 打包与路径处理",
+      "details": [
+        "打包 cygwin rsync.exe、ssh.exe、sshpass.exe 及依赖 DLL（放在 resources/bin/）",
+        "macOS 打包 sshpass（通过 Homebrew 或静态编译获取）",
+        "启动时查找顺序：resources/bin/ > PATH 环境变量",
+        "Windows 路径转换：本地路径 C:\\foo\\bar → /c/foo/bar，远程路径保持原样",
+        "处理路径空格：自动添加双引号包裹含空格的路径（本地和远程路径）"
+      ],
+      "finish": false
+    },
+    "f3_task_edit_ui": {
+      "core": "任务编辑页面（新建/编辑任务）",
+      "details": [
+        "字段：任务名、远程IP、端口、用户名、密码、本地目录、远程目录、同步间隔、版本保留、Trash开关",
+        "字段校验：本地路径存在性检查、端口合法性（1-65535）",
+        "测试连接按钮：保存前 SSH 连通性测试（sshpass -p password ssh user@host -p port 'echo ok'）",
+        "密码输入框（password type，明文存储到 SQLite，风险已接受）",
+        "保存任务到 SQLite"
+      ],
+      "finish": true
+    },
+    "f4_task_list_ui": {
+      "core": "任务管理页面（任务列表与状态展示）",
+      "details": [
+        "列表字段：任务名、上次同步时间、状态（成功/失败/进行中）、立即同步按钮、开关、查看日志、删除任务",
+        "点击任务名进入编辑页",
+        "开关控制任务启用/禁用（禁用时从调度器移除）",
+        "立即同步按钮：检查 is_running 锁，避免重复触发",
+        "删除任务：确认对话框 + 从 SQLite 删除任务和相关日志"
+      ],
+      "finish": true
+    },
+    "f5_rsync_executor": {
+      "core": "rsync 命令生成与执行器",
+      "details": [
+        "命令模板（版本保留开启时）：SSHPASS='password' sshpass -e rsync -av -e 'ssh -p port -o StrictHostKeyChecking=accept-new' --backup --backup-dir=\"<remote_dir>/.versions/<timestamp>/\" \"<local_dir>/\" user@host:\"<remote_dir>\"",
+        "命令模板（版本保留关闭时）：SSHPASS='password' sshpass -e rsync -av -e 'ssh -p port -o StrictHostKeyChecking=accept-new' \"<local_dir>/\" user@host:\"<remote_dir>\"",
+        "同步前确保远端目录存在：ssh user@host -p port 'mkdir -p \"<remote_dir>\" \"<remote_dir>/.versions\" \"<remote_dir>/.trash\"'（超时 30秒）",
+        "rsync 失败降级策略：rsync 返回码 ≠ 0 时，自动降级使用 sftp 逐文件上传（遍历本地目录，sftp put 每个文件）",
+        "sftp 命令模板：echo 'put -r \"<local_dir>\"/* \"<remote_dir>/\"' | SSHPASS='password' sshpass -e sftp -P port -o StrictHostKeyChecking=accept-new user@host（超时 300秒）",
+        "sftp 降级后记录日志（标记为 sftp 模式），但仍然标记为成功",
+        "同步后（Trash 开启时）手动 diff 远程多余文件：ssh user@host -p port 'cd \"<remote_dir>\" && find . -maxdepth 10 ! -path \"./.versions/*\" ! -path \"./.trash/*\" -type f'（超时 60秒），与本地比对，找出多余文件",
+        "移动多余文件到 trash：ssh user@host -p port 'mkdir -p \"<remote_dir>/.trash/<timestamp>/$(dirname path)\" && mv \"<remote_dir>/path\" \"<remote_dir>/.trash/<timestamp>/path\"'（超时 60秒）",
+        "Windows 路径转换：C:\\path → /c/path（cygwin 格式），处理空格和反斜杠转义",
+        "子进程调用 rsync/sftp，捕获 stdout/stderr（截断到 10KB 避免日志爆炸）",
+        "返回码处理（≠ 0 标记失败但不中断调度）",
+        "任务级锁（is_running 标志），防止并发执行（同步、版本清理、Trash 移动串行执行）"
+      ],
+      "finish": true
+    },
+    "f6_version_management": {
+      "core": "版本保留机制（10个版本）",
+      "details": [
+        "每次同步在 .versions/<timestamp>/ 下保存变更文件（版本保留开启时）",
+        "同步完成后立即执行版本清理：ssh user@host -p port 'cd \"<remote_dir>/.versions\" && ls -1dt */ | tail -n +11 | xargs -I {} rm -rf {}'（超时 60秒）",
+        "清理逻辑：列出 .versions/ 下所有目录，按时间戳排序，保留最新 10 个，删除其余",
+        "清理失败（权限不足/SSH断开）：记录日志但不中断任务，下次同步重试",
+        "清理与同步串行执行（复用 is_running 锁）"
+      ],
+      "finish": true
+    },
+    "f7_trash_mechanism": {
+      "core": "Trash 机制（90天自动清理）",
+      "details": [
+        "同步后（Trash 开启时）diff 本地和远程，找出远程多余文件，SSH 执行 mkdir -p 创建父目录并 mv 到 .trash/<timestamp>/",
+        "Trash 清理：每天 00:00 执行一次（独立定时任务，不与任务同步共享锁）",
+        "清理逻辑：ssh user@host -p port 'find \"<remote_dir>/.trash\" -mindepth 1 -maxdepth 1 -type d -mtime +90 -exec rm -rf {} \\;'（超时 120秒）",
+        "清理失败（权限不足/SSH断开）：记录日志但不影响同步任务",
+        "Trash 移动与同步串行执行（同一任务内复用 is_running 锁）"
+      ],
+      "finish": true
+    },
+    "f8_scheduler": {
+      "core": "定时调度器（基于任务间隔执行同步）",
+      "details": [
+        "读取启用任务的同步间隔（分钟），使用 setInterval 实现定时触发",
+        "启动时从 SQLite 读取所有 enabled=true 的任务，加入调度队列",
+        "触发前检查 is_running 锁，如果正在运行则跳过本次触发",
+        "支持手动触发（立即同步按钮），同样检查锁",
+        "任务禁用时清除对应的 setInterval"
+      ],
+      "finish": true
+    },
+    "f9_logging_system": {
+      "core": "日志系统（每个任务保存最近100条）",
+      "details": [
+        "字段：时间、结果（success/fail）、rsync 输出（截断到 10KB）、耗时",
+        "写入 SQLite logs 表（task_id, timestamp, status, output, duration）",
+        "每次写入前检查该任务日志数量，超过 100 条删除最旧的（FIFO）",
+        "UI 展示日志窗口（分页或滚动加载）"
+      ],
+      "finish": true
+    },
+    "f10_error_handling": {
+      "core": "错误处理与用户反馈",
+      "details": [
+        "SSH 无法连接 → 标记失败，记录日志，不中断调度",
+        "权限错误 → 标记失败，记录日志，不中断调度",
+        "路径不存在 → UI 阻止保存，弹出错误提示",
+        "rsync 返回码 ≠ 0 → 写日志，标记失败，不中断调度",
+        "所有 SSH 操作（mkdir/find/mv/rm）超时时间统一设为 120 秒，超时则终止进程并标记失败",
+        "rsync 命令超时时间设为 300 秒"
+      ],
+      "finish": true
+    },
+    "f11_retry_strategy": {
+      "core": "失败重试策略（避免无限刷失败日志）",
+      "details": [
+        "连续失败 3 次后，自动禁用任务（设置 enabled=false）",
+        "成功一次即清零失败计数器（consecutive_failures=0）",
+        "UI 展示禁用原因（连续失败）",
+        "用户手动重新启用任务后，失败计数器清零",
+        "失败计数器存储在 SQLite tasks 表的 consecutive_failures 字段"
+      ],
+      "finish": true
+    }
+  }
+}
