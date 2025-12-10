@@ -17,8 +17,7 @@ function getBinPath() {
       return path.join(__dirname, '../../resources/bin/macos');
     }
   } else {
-    const { app } = require('electron');
-    const resourcesPath = path.join(app.getAppPath(), 'resources', 'bin');
+    const resourcesPath = path.join(process.resourcesPath, 'bin');
 
     if (platform === 'win32') {
       return path.join(resourcesPath, 'windows');

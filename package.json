@@ -6,7 +6,9 @@
   "scripts": {
     "start": "electron .",
     "dev": "NODE_ENV=development electron .",
-    "rebuild": "electron-rebuild"
+    "rebuild": "electron-rebuild",
+    "build": "electron-builder",
+    "postinstall": "electron-builder install-app-deps"
   },
   "repository": {
     "type": "git",
@@ -25,6 +27,7 @@
     "electron": "^39.2.6"
   },
   "devDependencies": {
+    "electron-builder": "^26.0.12",
     "electron-rebuild": "^3.2.9"
   }
 }

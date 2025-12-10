@@ -1,0 +1,26 @@
+appId: com.yeyumo.rsync
+productName: Rsync Tool
+directories:
+  output: dist
+  buildResources: resources
+files:
+  - "**/*"
+  - "!dist/**/*"
+  - "!resources/bin/**/*"
+extraResources:
+  - from: "resources/bin"
+    to: "bin"
+    filter:
+      - "**/*"
+mac:
+  target: 
+    - target: dmg
+      arch: 
+        - x64
+        - arm64
+  identity: null # Disable signing verification requirement for local/CI builds without certs
+win:
+  target: nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

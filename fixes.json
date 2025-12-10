@@ -1,0 +1,51 @@
+{
+  "fix_detached_process": {
+    "core": "修复脱管子进程问题 - 取消detached模式，启动时检查PID有效性而不是无脑清零",
+    "priority": "P0",
+    "files": ["src/main/utils.js", "src/main/index.js", "src/database/db.js"],
+    "approach": "1. spawn时设detached:false; 2. tasks表加pid字段; 3. 启动时检查进程是否存活; 4. 删除无条件清零逻辑",
+    "finish": false
+  },
+  "fix_state_override": {
+    "core": "修复状态覆盖问题 - FINALLY块只更新运行时字段，不触碰用户配置",
+    "priority": "P0",
+    "files": ["src/main/executor.js"],
+    "approach": "1. 分离运行时字段和配置字段更新; 2. 使用SQL CASE表达式原子更新失败计数; 3. 不重新读取快照",
+    "finish": false
+  },
+  "fix_versions_trash_separation": {
+    "core": "拆分.versions和.trash目录 - 按PRD实现两个独立目录与清理策略",
+    "priority": "P1",
+    "files": ["src/main/executor.js", "src/main/scheduler.js"],
+    "approach": "1. 创建两个独立目录结构; 2. versions按时间戳保留最新10个; 3. trash按mtime清理90+天; 4. rsync --backup-dir指向正确目录",
+    "finish": false
+  },
+  "fix_lock_atomicity": {
+    "core": "修复锁的原子性 - 使用SQLite事务或任务队列",
+    "priority": "P1",
+    "files": ["src/main/executor.js", "src/main/scheduler.js"],
+    "approach": "1. 用db.transaction包装锁获取; 2. 或引入p-queue串行化执行; 3. 统一卡死检测逻辑",
+    "finish": false
+  },
+  "fix_password_security": {
+    "core": "密码安全 - 加密存储、handlers返回时脱敏",
+    "priority": "P1",
+    "files": ["src/database/db.js", "src/main/handlers.js", "src/main/executor.js"],
+    "approach": "1. 使用Node crypto加密存储密码; 2. handlers返回时删除password字段; 3. 执行时解密后立即用完",
+    "finish": false
+  },
+  "centralize_config": {
+    "core": "配置集中化 - 提取所有魔法数到config.js",
+    "priority": "P2",
+    "files": ["src/config.js (新建)", "src/main/executor.js", "src/main/scheduler.js", "src/main/utils.js"],
+    "approach": "1. 创建src/config.js; 2. 提取所有超时、限制、路径常量; 3. 全局替换魔法数引用",
+    "finish": false
+  },
+  "deduplicate_code": {
+    "core": "代码去重 - 卡死检测、清理逻辑统一管理",
+    "priority": "P2",
+    "files": ["src/main/executor.js", "src/main/scheduler.js"],
+    "approach": "1. 提取isTaskStale共享函数; 2. 提取forceUnlockTask共享函数; 3. 清理逻辑提取到utils",
+    "finish": false
+  }
+}
