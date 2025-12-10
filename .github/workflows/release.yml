@@ -16,11 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            artifact: '*.dmg'
-          - os: windows-latest
-            artifact: '*.exe'
+        os: [macos-latest, windows-latest]
 
     steps:
       - name: Checkout Code
@@ -41,15 +37,8 @@ jobs:
         shell: bash
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then
-            npm run build -- --publish onTagOrDraft
+            npm run build -- --publish always
           else
             npm run build -- --publish never
           fi
-
-      - name: Upload Installer
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v4
-        with:
-          name: installer-${{ matrix.os }}
-          path: dist/${{ matrix.artifact }}
 
