@@ -135,7 +135,13 @@ async function syncWithRsync(task) {
     }
   };
 
-  const rsyncCmd = `SSHPASS=${escapeShellArg(task.password)} ${sshpassPath} -e ${rsyncPath} ${rsyncArgs.join(' ')} -e ${rshCmdQuoted} ${localDirQuoted} ${task.username}@${task.remote_host}:${remoteDirQuoted} 2>&1`;
+  const rsyncCmd = `SSHPASS=${escapeShellArg(task.password)} ${escapeShellArg(sshpassPath)} -e ${escapeShellArg(rsyncPath)} ${rsyncArgs.join(' ')} -e ${rshCmdQuoted} ${localDirQuoted} ${task.username}@${task.remote_host}:${remoteDirQuoted} 2>&1`;
+
+  console.log(`Task ${task.id}: Executing rsync command:`);
+  console.log(`rsyncPath: ${rsyncPath}`);
+  console.log(`sshpassPath: ${sshpassPath}`);
+  console.log(`sshPath: ${sshPath}`);
+  console.log(`Full command: ${rsyncCmd}`);
 
   const result = await executeCommand('sh', ['-c', rsyncCmd], {
     timeout: config.timeouts.rsync,
@@ -163,7 +169,7 @@ async function syncWithSftp(task) {
   // It definitely does NOT delete files.
   
   const batchCmd = `put -r ${escapeShellArg(localDir)}/* ${escapeShellArg(remoteDir)}/`;
-  const sftpCmd = `echo ${escapeShellArg(batchCmd)} | SSHPASS=${escapeShellArg(task.password)} ${sshpassPath} -e ${sftpPath} -P ${task.remote_port} -o StrictHostKeyChecking=accept-new ${task.username}@${task.remote_host}`;
+  const sftpCmd = `echo ${escapeShellArg(batchCmd)} | SSHPASS=${escapeShellArg(task.password)} ${escapeShellArg(sshpassPath)} -e ${escapeShellArg(sftpPath)} -P ${task.remote_port} -o StrictHostKeyChecking=accept-new ${task.username}@${task.remote_host}`;
 
   const result = await executeCommand('sh', ['-c', sftpCmd], { timeout: config.timeouts.sftp });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('Z')[0];
