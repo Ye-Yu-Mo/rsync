@@ -31,10 +31,19 @@ function getBinPath() {
 }
 
 function getCommandPath(command) {
+  const platform = os.platform();
+
+  // macOS/Linux use system rsync/ssh/sftp (only sshpass needs bundling)
+  if (platform !== 'win32' && ['rsync', 'ssh', 'sftp'].includes(command)) {
+    const systemPath = `/usr/bin/${command}`;
+    if (fs.existsSync(systemPath)) {
+      return systemPath;
+    }
+  }
+
   const binPath = getBinPath();
 
   if (binPath) {
-    const platform = os.platform();
     const ext = platform === 'win32' ? '.exe' : '';
     const fullPath = path.join(binPath, command + ext);
 
