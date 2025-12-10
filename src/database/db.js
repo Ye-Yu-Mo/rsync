@@ -8,6 +8,7 @@ function init() {
   const dbPath = path.join(app.getPath('userData'), 'rsync.db');
   db = new Database(dbPath);
 
+  // 1. Create tables if they don't exist
   db.exec(`
     CREATE TABLE IF NOT EXISTS tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,6 +27,7 @@ function init() {
       consecutive_failures INTEGER NOT NULL DEFAULT 0,
       last_sync_time INTEGER,
       last_sync_status TEXT,
+      started_at INTEGER,
       created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
       updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
     );
@@ -44,6 +46,18 @@ function init() {
     CREATE INDEX IF NOT EXISTS idx_logs_task_id ON logs(task_id);
     CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
   `);
+
+  // 2. Migration: Add started_at column if it doesn't exist (for existing DBs)
+  try {
+    const tasksInfo = db.prepare('PRAGMA table_info(tasks)').all();
+    const hasStartedAt = tasksInfo.some(column => column.name === 'started_at');
+    
+    if (!hasStartedAt) {
+      db.prepare('ALTER TABLE tasks ADD COLUMN started_at INTEGER').run();
+    }
+  } catch (error) {
+    console.error('Migration failed:', error);
+  }
 
   return db;
 }

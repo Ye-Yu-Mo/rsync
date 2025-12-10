@@ -1,6 +1,6 @@
 const { getDB } = require('../database/db');
 const { executeSync } = require('./executor');
-const { executeSSH } = require('./utils');
+const { executeSSH, escapeShellArg, sendTaskUpdate } = require('./utils');
 
 const schedulers = new Map();
 let trashCleanupInterval = null;
@@ -22,8 +22,18 @@ function startTaskScheduler(task) {
     }
 
     if (currentTask.is_running) {
-      console.log(`Task ${task.id} is already running, skipping this trigger`);
-      return;
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const startTime = currentTask.started_at || 0;
+      // Consistent with executor.js: 24 hours timeout
+      const isStale = startTime && (nowSeconds - startTime > 86400);
+      if (isStale) {
+        db.prepare('UPDATE tasks SET is_running = 0 WHERE id = ?').run(task.id);
+        console.warn(`Task ${task.id} was stuck running, force-resetting flag`);
+        sendTaskUpdate();
+      } else {
+        console.log(`Task ${task.id} is already running, skipping this trigger`);
+        return;
+      }
     }
 
     try {
@@ -77,7 +87,8 @@ async function cleanTrashForTask(task) {
     password: task.password
   };
 
-  const cleanCmd = `find "${task.remote_dir}/.trash" -mindepth 1 -maxdepth 1 -type d -mtime +90 -exec rm -rf {} \\;`;
+  const versionsDir = `${task.remote_dir}/.versions`;
+  const cleanCmd = `find ${escapeShellArg(versionsDir)} -mindepth 1 -maxdepth 1 -type d -mtime +90 -exec rm -rf {} \\;`;
 
   try {
     await executeSSH(config, cleanCmd, 120000);

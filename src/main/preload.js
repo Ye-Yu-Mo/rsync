@@ -9,5 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleTask: (id, enabled) => ipcRenderer.invoke('toggle-task', id, enabled),
   syncTask: (id) => ipcRenderer.invoke('sync-task', id),
   testConnection: (config) => ipcRenderer.invoke('test-connection', config),
-  getLogs: (taskId) => ipcRenderer.invoke('get-logs', taskId)
+  getLogs: (taskId) => ipcRenderer.invoke('get-logs', taskId),
+  onTaskUpdate: (callback) => ipcRenderer.on('task-update', callback),
+  onTaskProgress: (callback) => ipcRenderer.on('task-progress', callback)
 });

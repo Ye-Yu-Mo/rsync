@@ -30,6 +30,9 @@ function createWindow() {
 
 app.whenReady().then(() => {
   db.init();
+  // Reset any stuck tasks on startup
+  db.getDB().prepare('UPDATE tasks SET is_running = 0 WHERE is_running = 1').run();
+  
   setupHandlers();
   scheduler.init();
   createWindow();
