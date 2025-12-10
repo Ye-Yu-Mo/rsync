@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const util = require('util');
+const config = require('../config');
 
 const execPromise = util.promisify(exec);
 
@@ -70,7 +71,7 @@ function quotePathIfNeeded(filePath) {
 }
 
 async function executeCommand(command, args, options = {}) {
-  const timeout = options.timeout || 120000;
+  const timeout = options.timeout || config.timeouts.defaultCommand;
   const env = { ...process.env, ...options.env };
   const onOutput = options.onOutput; // Callback for realtime output
 
@@ -95,7 +96,7 @@ async function executeCommand(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(spawnCmd, spawnArgs, {
       env,
-      detached: true, // Critical for killing process group
+      detached: config.process.detached,
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
@@ -131,9 +132,8 @@ async function executeCommand(command, args, options = {}) {
     child.on('close', (code) => {
       clearTimeout(timer);
       console.log(`[CMD CLOSE]: Command "${spawnCmd}" (PID: ${child.pid}) closed with code ${code}, killed: ${killed}`);
-      
-      // Truncate output to prevent memory issues
-      const output = (stdout + stderr).substring(0, 10240);
+
+      const output = (stdout + stderr).substring(0, config.limits.maxOutputSize);
       
       if (killed) {
          resolve({
@@ -167,8 +167,8 @@ async function executeCommand(command, args, options = {}) {
   });
 }
 
-function buildSSHCommand(config, remoteCommand) {
-  const { remote_host, remote_port, username, password } = config;
+function buildSSHCommand(sshConfig, remoteCommand) {
+  const { remote_host, remote_port, username, password } = sshConfig;
   const port = remote_port || 22;
 
   const sshpassPath = getCommandPath('sshpass');
@@ -192,9 +192,63 @@ function buildSSHCommand(config, remoteCommand) {
   };
 }
 
-async function executeSSH(config, remoteCommand, timeout = 120000) {
-  const { command, args, env } = buildSSHCommand(config, remoteCommand);
-  return executeCommand(command, args, { timeout, env });
+async function executeSSH(sshConfig, remoteCommand, timeout) {
+  const defaultTimeout = config.timeouts.ssh;
+  const actualTimeout = timeout !== undefined ? timeout : defaultTimeout;
+  const { command, args, env } = buildSSHCommand(sshConfig, remoteCommand);
+  return executeCommand(command, args, { timeout: actualTimeout, env });
+}
+
+function isTaskStale(task, nowSeconds = Math.floor(Date.now() / 1000)) {
+  if (!task || !task.is_running || !task.started_at) {
+    return false;
+  }
+  return nowSeconds - task.started_at > config.limits.staleTaskThreshold;
+}
+
+function releaseLock(db, taskId) {
+  db.prepare('UPDATE tasks SET is_running = 0 WHERE id = ?').run(taskId);
+}
+
+function acquireLock(db, taskId, options = {}) {
+  const retries = options.retries ?? 5;
+  const retryDelayMs = options.retryDelayMs ?? 50;
+
+  const getTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
+  const lockStmt = db.prepare("UPDATE tasks SET is_running = 1, started_at = strftime('%s', 'now') WHERE id = ? AND is_running = 0");
+
+  const takeLock = db.transaction((id) => {
+    const task = getTask.get(id);
+    if (!task) {
+      throw new Error(`Task ${id} not found`);
+    }
+
+    if (isTaskStale(task)) {
+      releaseLock(db, id);
+    }
+
+    const result = lockStmt.run(id);
+    if (result.changes === 0) {
+      return { locked: false, task: getTask.get(id) };
+    }
+
+    return { locked: true, task: getTask.get(id) };
+  });
+
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return takeLock.immediate(taskId);
+    } catch (error) {
+      if (error.code === 'SQLITE_BUSY' && attempt < retries - 1) {
+        const start = Date.now();
+        while (Date.now() - start < retryDelayMs * (attempt + 1)) {}
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return { locked: false, task: null };
 }
 
 function sendTaskUpdate() {
@@ -216,12 +270,15 @@ function sendTaskProgress(taskId, progress) {
 module.exports = {
   convertWindowsPath,
   quotePathIfNeeded,
-  escapeShellArg, // Added export
+  escapeShellArg,
   executeCommand,
   executeSSH,
   buildSSHCommand,
   getCommandPath,
   getBinPath,
   sendTaskUpdate,
-  sendTaskProgress
+  sendTaskProgress,
+  isTaskStale,
+  acquireLock,
+  releaseLock
 };

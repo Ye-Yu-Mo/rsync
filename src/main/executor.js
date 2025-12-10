@@ -1,12 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const { executeCommand, executeSSH, convertWindowsPath, escapeShellArg, getCommandPath, sendTaskUpdate, sendTaskProgress } = require('./utils');
+const { executeCommand, executeSSH, convertWindowsPath, escapeShellArg, getCommandPath, sendTaskUpdate, sendTaskProgress, acquireLock } = require('./utils');
 const { getDB } = require('../database/db');
+const config = require('../config');
 
-async function ensureRemoteDirs(config, remoteDir) {
-  // We need .versions (which serves as trash and history)
-  const cmd = `mkdir -p ${escapeShellArg(remoteDir)} ${escapeShellArg(remoteDir + '/.versions')}`;
-  const result = await executeSSH(config, cmd, 30000);
+async function ensureRemoteDirs(sshConfig, remoteDir) {
+  const cmd = `mkdir -p ${escapeShellArg(remoteDir)} ${escapeShellArg(remoteDir + '/' + config.paths.versionsDir)}`;
+  const result = await executeSSH(sshConfig, cmd, config.timeouts.sshMkdir);
 
   if (!result.success) {
     throw new Error(`Failed to create remote directories: ${result.output}`);
@@ -21,11 +21,8 @@ async function syncWithRsync(task) {
 
   const localDirQuoted = escapeShellArg(localDir + '/'); // Trailing slash important for rsync
   const remoteDirQuoted = escapeShellArg(remoteDir + '/');
-  
-  // Unified backup directory for both modified and deleted files
-  // If "trash_enabled" or "version_enabled" is on, we use this mechanism.
-  // We treat them as the same feature: "Keep history of changes/deletions"
-  const backupDir = `${remoteDir}/.versions/${timestamp}`;
+
+  const backupDir = `${remoteDir}/${config.paths.versionsDir}/${timestamp}`;
   const backupDirQuoted = escapeShellArg(backupDir);
 
   const rsyncPath = getCommandPath('rsync');
@@ -40,11 +37,11 @@ async function syncWithRsync(task) {
   const rshCmdQuoted = escapeShellArg(rshCmd);
 
   let rsyncArgs = [
-    '-avz', // Added 'z' for compression
-    '--delete', // Enable deletion synchronization
-    '--force', // Force deletion of directories even if not empty
-    '--exclude=.versions', // Linus Fix: Never backup the backup directory!
-    '--progress', // Show progress during transfer
+    '-avz',
+    '--delete',
+    '--force',
+    `--exclude=${config.paths.versionsDir}`,
+    '--progress',
   ];
 
   if (task.version_enabled || task.trash_enabled) {
@@ -71,8 +68,8 @@ async function syncWithRsync(task) {
     }
   };
 
-  const result = await executeCommand('sh', ['-c', rsyncCmd], { 
-    timeout: 3600000,
+  const result = await executeCommand('sh', ['-c', rsyncCmd], {
+    timeout: config.timeouts.rsync,
     onOutput: onOutput
   });
   
@@ -102,7 +99,7 @@ async function syncWithSftp(task) {
   const batchCmd = `put -r ${escapeShellArg(localDir)}/* ${escapeShellArg(remoteDir)}/`;
   const sftpCmd = `echo ${escapeShellArg(batchCmd)} | SSHPASS=${escapeShellArg(task.password)} ${sshpassPath} -e ${sftpPath} -P ${task.remote_port} -o StrictHostKeyChecking=accept-new ${task.username}@${task.remote_host}`;
 
-  const result = await executeCommand('sh', ['-c', sftpCmd], { timeout: 300000 });
+  const result = await executeCommand('sh', ['-c', sftpCmd], { timeout: config.timeouts.sftp });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T').join('_').split('Z')[0];
 
   return { result, timestamp, syncMode: 'sftp' };
@@ -113,54 +110,37 @@ async function cleanVersions(task) {
     return;
   }
 
-  const config = {
+  const sshConfig = {
     remote_host: task.remote_host,
     remote_port: task.remote_port,
     username: task.username,
     password: task.password
   };
 
-  const versionsDir = `${task.remote_dir}/.versions`;
-  // Safer cleanup: List directories by time (newest first), skip first 10, remove the rest.
-  // Using 'ls -td' implies sorting by modification time.
-  const cleanCmd = `cd ${escapeShellArg(versionsDir)} && ls -td */ 2>/dev/null | tail -n +11 | while read -r d; do rm -rf "$d"; done`;
+  const versionsDir = `${task.remote_dir}/${config.paths.versionsDir}`;
+  const keepCount = config.limits.maxVersions + 1;
+  const cleanCmd = `cd ${escapeShellArg(versionsDir)} && ls -td */ 2>/dev/null | tail -n +${keepCount} | while read -r d; do rm -rf "$d"; done`;
 
   try {
-    await executeSSH(config, cleanCmd, 60000);
+    await executeSSH(sshConfig, cleanCmd, config.timeouts.sshVersionCleanup);
   } catch (error) {
     console.error(`Version cleanup failed: ${error.message}`);
-    // Non-fatal error
   }
 }
 
 async function executeSync(taskId) {
   const db = getDB();
-  let task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+  const { task, locked } = acquireLock(db, taskId, { retries: 5, retryDelayMs: 50 });
 
   if (!task) {
     throw new Error(`Task ${taskId} not found`);
   }
 
-  // If task was stuck in running state for more than 5 minutes, clear the flag.
-  // Linus Fix: Use started_at to detect stuck tasks, not last_sync_time.
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  const startTime = task.started_at || 0;
-  // Increase timeout to 24 hours (86400 seconds) because rsync can be long running. 
-  // 5 minutes was a joke.
-  const isPossiblyStuck = task.is_running && (nowSeconds - startTime > 86400);
-  
-  if (isPossiblyStuck) {
-    db.prepare('UPDATE tasks SET is_running = 0 WHERE id = ?').run(taskId);
-    task.is_running = 0;
-    sendTaskUpdate(); // Notify UI
-  }
-
-  if (task.is_running) {
+  if (!locked) {
     throw new Error('Task is already running');
   }
 
-  db.prepare('UPDATE tasks SET is_running = 1, started_at = strftime(\'%s\', \'now\') WHERE id = ?').run(taskId);
-  sendTaskUpdate(); // Notify UI
+  sendTaskUpdate();
   console.log(`Task ${taskId} execution started.`);
 
   const runStartTime = Date.now();
@@ -169,7 +149,7 @@ async function executeSync(taskId) {
   let output = '';
 
   try {
-    const config = {
+    const sshConfig = {
       remote_host: task.remote_host,
       remote_port: task.remote_port,
       username: task.username,
@@ -177,7 +157,7 @@ async function executeSync(taskId) {
     };
 
     console.log(`Task ${taskId}: Ensuring remote directories...`);
-    await ensureRemoteDirs(config, task.remote_dir);
+    await ensureRemoteDirs(sshConfig, task.remote_dir);
 
     let syncResult;
     try {
@@ -218,46 +198,53 @@ async function executeSync(taskId) {
     throw error;
   } finally {
     const duration = Math.floor((Date.now() - runStartTime) / 1000);
-    const consecutiveFailures = success ? 0 : task.consecutive_failures + 1;
-    const enabled = success ? task.enabled : (consecutiveFailures >= 3 ? 0 : task.enabled);
     const status = success ? 'success' : 'fail';
+    const failed = !success;
 
-    // Always record a log entry
-    const logStmt = db.prepare(`
-      INSERT INTO logs (task_id, timestamp, status, output, duration, sync_mode)
-      VALUES (?, strftime('%s', 'now'), ?, ?, ?, ?)
-    `);
-    const logResult = logStmt.run(taskId, status, output, duration, syncMode);
-    console.log(`Task ${taskId}: Log written. ID: ${logResult.lastInsertRowid}, Status: ${status}`);
-
-    // Trim logs
-    const logCount = db.prepare('SELECT COUNT(*) as count FROM logs WHERE task_id = ?').get(taskId).count;
-    if (logCount > 100) {
-      const deleteStmt = db.prepare(`
-        DELETE FROM logs WHERE task_id = ? AND id NOT IN (
-          SELECT id FROM logs WHERE task_id = ? ORDER BY timestamp DESC LIMIT 100
-        )
+    const writeLogAndState = db.transaction(() => {
+      const logStmt = db.prepare(`
+        INSERT INTO logs (task_id, timestamp, status, output, duration, sync_mode)
+        VALUES (?, strftime('%s', 'now'), ?, ?, ?, ?)
       `);
-      deleteStmt.run(taskId, taskId);
-    }
+      const logResult = logStmt.run(taskId, status, output, duration, syncMode);
+      console.log(`Task ${taskId}: Log written. ID: ${logResult.lastInsertRowid}, Status: ${status}`);
 
-    db.prepare(`
-      UPDATE tasks SET
-        is_running = 0,
-        last_sync_time = strftime('%s', 'now'),
-        last_sync_status = ?,
-        consecutive_failures = ?,
-        enabled = ?
-      WHERE id = ?
-    `).run(status, consecutiveFailures, enabled, taskId);
-    
-    sendTaskUpdate(); // Notify UI
+      const logCount = db.prepare('SELECT COUNT(*) as count FROM logs WHERE task_id = ?').get(taskId).count;
+      if (logCount > config.limits.maxLogs) {
+        const deleteStmt = db.prepare(`
+          DELETE FROM logs WHERE task_id = ? AND id NOT IN (
+            SELECT id FROM logs WHERE task_id = ? ORDER BY timestamp DESC LIMIT ?
+          )
+        `);
+        deleteStmt.run(taskId, taskId, config.limits.maxLogs);
+      }
+
+      db.prepare(`
+        UPDATE tasks SET
+          is_running = 0,
+          last_sync_time = strftime('%s', 'now'),
+          last_sync_status = ?,
+          consecutive_failures = CASE
+            WHEN ? THEN COALESCE(consecutive_failures, 0) + 1
+            ELSE 0
+          END,
+          enabled = CASE
+            WHEN enabled = 1 AND ? AND COALESCE(consecutive_failures, 0) + 1 >= ?
+            THEN 0
+            ELSE enabled
+          END
+        WHERE id = ?
+      `).run(status, failed ? 1 : 0, failed ? 1 : 0, config.limits.maxConsecutiveFailures, taskId);
+    });
+
+    writeLogAndState();
+    sendTaskUpdate();
   }
 }
 
-async function testConnection(config) {
+async function testConnection(sshConfig) {
   try {
-    const result = await executeSSH(config, 'echo "Connection successful"', 30000);
+    const result = await executeSSH(sshConfig, 'echo "Connection successful"', config.timeouts.sshTestConnection);
     return { success: result.success, error: result.success ? null : result.output };
   } catch (error) {
     return { success: false, error: error.message };

@@ -1,6 +1,7 @@
 const { ipcMain } = require('electron');
 const { getDB } = require('../database/db');
 const fs = require('fs');
+const config = require('../config');
 
 function setupHandlers() {
   ipcMain.handle('get-tasks', () => {
@@ -124,14 +125,14 @@ function setupHandlers() {
       SELECT * FROM logs
       WHERE task_id = ?
       ORDER BY timestamp DESC
-      LIMIT 100
-    `).all(taskId);
+      LIMIT ?
+    `).all(taskId, config.limits.maxLogs);
     return logs;
   });
 
-  ipcMain.handle('test-connection', async (event, config) => {
+  ipcMain.handle('test-connection', async (event, sshConfig) => {
     const { testConnection } = require('./executor');
-    return await testConnection(config);
+    return await testConnection(sshConfig);
   });
 
   ipcMain.handle('sync-task', async (event, id) => {

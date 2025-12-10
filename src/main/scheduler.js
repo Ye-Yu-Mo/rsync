@@ -1,6 +1,7 @@
 const { getDB } = require('../database/db');
 const { executeSync } = require('./executor');
-const { executeSSH, escapeShellArg, sendTaskUpdate } = require('./utils');
+const { executeSSH, escapeShellArg, sendTaskUpdate, isTaskStale, releaseLock } = require('./utils');
+const config = require('../config');
 
 const schedulers = new Map();
 let trashCleanupInterval = null;
@@ -22,18 +23,14 @@ function startTaskScheduler(task) {
     }
 
     if (currentTask.is_running) {
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      const startTime = currentTask.started_at || 0;
-      // Consistent with executor.js: 24 hours timeout
-      const isStale = startTime && (nowSeconds - startTime > 86400);
-      if (isStale) {
-        db.prepare('UPDATE tasks SET is_running = 0 WHERE id = ?').run(task.id);
-        console.warn(`Task ${task.id} was stuck running, force-resetting flag`);
-        sendTaskUpdate();
-      } else {
+      if (!isTaskStale(currentTask)) {
         console.log(`Task ${task.id} is already running, skipping this trigger`);
         return;
       }
+
+      releaseLock(db, task.id);
+      console.warn(`Task ${task.id} was stuck running, force-resetting flag`);
+      sendTaskUpdate();
     }
 
     try {
@@ -80,18 +77,18 @@ function loadAllSchedulers() {
 }
 
 async function cleanTrashForTask(task) {
-  const config = {
+  const sshConfig = {
     remote_host: task.remote_host,
     remote_port: task.remote_port,
     username: task.username,
     password: task.password
   };
 
-  const versionsDir = `${task.remote_dir}/.versions`;
-  const cleanCmd = `find ${escapeShellArg(versionsDir)} -mindepth 1 -maxdepth 1 -type d -mtime +90 -exec rm -rf {} \\;`;
+  const versionsDir = `${task.remote_dir}/${config.paths.versionsDir}`;
+  const cleanCmd = `find ${escapeShellArg(versionsDir)} -mindepth 1 -maxdepth 1 -type d -mtime +${config.limits.trashRetentionDays} -exec rm -rf {} \\;`;
 
   try {
-    await executeSSH(config, cleanCmd, 120000);
+    await executeSSH(sshConfig, cleanCmd, config.timeouts.sshTrashCleanup);
     console.log(`Trash cleanup completed for task ${task.id}: ${task.name}`);
   } catch (error) {
     console.error(`Trash cleanup failed for task ${task.id}:`, error.message);

@@ -3,49 +3,164 @@
     "core": "修复脱管子进程问题 - 取消detached模式，启动时检查PID有效性而不是无脑清零",
     "priority": "P0",
     "files": ["src/main/utils.js", "src/main/index.js", "src/database/db.js"],
-    "approach": "1. spawn时设detached:false; 2. tasks表加pid字段; 3. 启动时检查进程是否存活; 4. 删除无条件清零逻辑",
-    "finish": false
+    "approach": "1) tasks表迁移加pid字段（默认NULL并建索引），启动时为旧数据补NULL；2) spawn设置detached:false并监听child exit更新状态/释放锁；3) 启动或调度前用process.kill(pid,0)校验存活，否则标记stale并走统一unlock；4) 去掉无条件清零，改为基于liveness+锁状态的重置；5) orphan子进程统一kill或加入清理列表（兼容win/unix）。",
+    "dependencies": ["fix_lock_atomicity"],
+    "risks": [
+      "pid重用可能误判存活/僵死，需要结合任务创建时间",
+      "Windows下process.kill(pid,0)可能需要特权，误报导致任务卡住",
+      "DB迁移/回填失败导致pid为NaN或缺失"
+    ],
+    "test_points": [
+      "重启后对已有pid记录做liveness校验，僵尸任务被标记stale并解锁",
+      "child exit事件能更新状态并无残留子进程（win/unix）",
+      "异常退出后重启不再无条件清零，历史状态被保留"
+    ],
+    "edge_cases": [
+      "pid已被复用但旧进程退出",
+      "无法向pid发送信号（权限或防火墙）",
+      "子进程启动失败但pid已写入"
+    ],
+    "finish": false,
+    "notes": "config.process.detached已设为false，但完整的PID追踪和清理逻辑待实现"
   },
   "fix_state_override": {
     "core": "修复状态覆盖问题 - FINALLY块只更新运行时字段，不触碰用户配置",
     "priority": "P0",
     "files": ["src/main/executor.js"],
-    "approach": "1. 分离运行时字段和配置字段更新; 2. 使用SQL CASE表达式原子更新失败计数; 3. 不重新读取快照",
-    "finish": false
+    "approach": "1) 明确runtime字段列表（status/pid/started_at/finished_at/attempts等）；2) FINALLY仅更新runtime字段，配置字段只读；3) 用单条UPDATE+CASE原子增加失败计数并设置状态；4) 整个更新放在事务内避免lost update，不再重新读取旧快照覆盖配置。",
+    "dependencies": ["fix_lock_atomicity"],
+    "risks": [
+      "runtime字段列表遗漏导致状态不同步",
+      "事务范围过大阻塞调度",
+      "仍有旧快照覆盖配置的隐藏路径"
+    ],
+    "test_points": [
+      "执行后配置字段保持原值（前后对比）",
+      "失败计数/状态在finally中正确更新且未覆盖配置",
+      "并发写同一任务时无lost update，busy后重试成功"
+    ],
+    "edge_cases": [
+      "任务被手动取消/超时中断",
+      "历史任务缺失runtime字段",
+      "异常路径未经过finally"
+    ],
+    "finish": true
   },
   "fix_versions_trash_separation": {
     "core": "拆分.versions和.trash目录 - 按PRD实现两个独立目录与清理策略",
     "priority": "P1",
     "files": ["src/main/executor.js", "src/main/scheduler.js"],
-    "approach": "1. 创建两个独立目录结构; 2. versions按时间戳保留最新10个; 3. trash按mtime清理90+天; 4. rsync --backup-dir指向正确目录",
+    "approach": "1) 在config中定义versions_dir/trash_dir，启动时确保存在；2) rsync --backup-dir指向versions/{taskId}/timestamp，删除操作写入trash；3) versions清理按时间戳保留最新10个；4) trash按mtime清理>90天，避免与运行中任务并发；5) 全部路径用path.join并记录操作日志。",
+    "dependencies": ["centralize_config"],
+    "risks": [
+      "路径拼接错误导致备份/清理误删数据",
+      "清理策略实现错误删除最新版本或占满磁盘",
+      "备份与清理并发导致文件句柄冲突"
+    ],
+    "test_points": [
+      "一次运行产生versions与trash两个独立目录",
+      "超过10个版本时仅删除最旧且最新保留",
+      "trash中>90天文件被清理，<90天不受影响"
+    ],
+    "edge_cases": [
+      "系统时间被调整导致过度/不足清理",
+      "部分失败留下临时文件需要兜底删除",
+      "任务同名/同id目录冲突"
+    ],
     "finish": false
   },
   "fix_lock_atomicity": {
     "core": "修复锁的原子性 - 使用SQLite事务或任务队列",
-    "priority": "P1",
+    "priority": "P0",
     "files": ["src/main/executor.js", "src/main/scheduler.js"],
-    "approach": "1. 用db.transaction包装锁获取; 2. 或引入p-queue串行化执行; 3. 统一卡死检测逻辑",
-    "finish": false
+    "approach": "1) 采用SQLite BEGIN IMMEDIATE + UPDATE ... WHERE status='idle'获取锁并检查受影响行；2) 锁释放与stale检测抽成共享函数复用；3) 锁相关读写放在单事务内，捕获SQLITE_BUSY并带退避重试；4) watchdog基于last_heartbeat超时强制解锁；5) 不再混用事务和p-queue，事务为主，必要时队列仅包裹耗时async段。",
+    "dependencies": [],
+    "risks": [
+      "长事务阻塞其他查询",
+      "未正确处理SQLITE_BUSY导致任务失败",
+      "watchdog误判活跃任务并强行解锁"
+    ],
+    "test_points": [
+      "并发获取锁仅一个成功，其余收到busy/重试",
+      "锁持有过程中executor崩溃，重启后watchdog能解锁",
+      "正常和异常路径均能释放锁并提交事务"
+    ],
+    "edge_cases": [
+      "任务状态异常（非idle）导致锁获取失败",
+      "数据库连接中断事务未提交",
+      "watchdog超时配置过短/过长"
+    ],
+    "finish": true,
+    "notes": "已实现acquireLock/releaseLock/isTaskStale共享函数，支持SQLITE_BUSY重试"
   },
   "fix_password_security": {
     "core": "密码安全 - 加密存储、handlers返回时脱敏",
-    "priority": "P1",
+    "priority": "P0",
     "files": ["src/database/db.js", "src/main/handlers.js", "src/main/executor.js"],
-    "approach": "1. 使用Node crypto加密存储密码; 2. handlers返回时删除password字段; 3. 执行时解密后立即用完",
+    "approach": "1) 引入对称密钥，来源env或OS keyring，缺失则fail-fast；2) 迁移现有明文密码：检测未加密值并加密写回；3) 数据库存储密文（含版本/iv），执行前解密并零化内存；4) handlers返回时移除password字段并日志脱敏；5) 支持密钥轮换/错误时的恢复提示，密钥不落盘在repo中。",
+    "dependencies": [],
+    "risks": [
+      "密钥管理不当导致历史数据不可解密",
+      "迁移中断造成部分记录未加密",
+      "日志或错误栈仍泄露明文"
+    ],
+    "test_points": [
+      "创建/更新任务后数据库中密码为密文",
+      "handlers返回的数据不含password字段",
+      "executor能解密正常执行，错误密钥时任务失败并提示"
+    ],
+    "edge_cases": [
+      "缺失密钥时启动失败并给出明确错误",
+      "密钥轮换后旧记录向后兼容或有迁移路径",
+      "损坏/空密码字段的处理"
+    ],
     "finish": false
   },
   "centralize_config": {
     "core": "配置集中化 - 提取所有魔法数到config.js",
     "priority": "P2",
     "files": ["src/config.js (新建)", "src/main/executor.js", "src/main/scheduler.js", "src/main/utils.js"],
-    "approach": "1. 创建src/config.js; 2. 提取所有超时、限制、路径常量; 3. 全局替换魔法数引用",
-    "finish": false
+    "approach": "1) 创建src/config.js暴露只读常量（timeouts、路径、保留数等），支持env覆盖；2) 抽取当前魔法数并替换引用；3) 对配置对象Object.freeze防止运行时修改；4) 更新测试/脚本读取新配置；5) 记录默认值以便迁移。",
+    "dependencies": [],
+    "risks": [
+      "遗漏魔法数导致行为不一致",
+      "循环依赖或缓存旧配置",
+      "错误默认值使清理/超时失效"
+    ],
+    "test_points": [
+      "关键模块加载的配置值与旧行为一致",
+      "env覆盖生效且不影响其他值",
+      "修改配置后scheduler/executor实际使用新值"
+    ],
+    "edge_cases": [
+      "运行时意外修改config（应报错或忽略）",
+      "路径类配置在Windows/Linux差异",
+      "缺省env导致fallback是否合理"
+    ],
+    "finish": true,
+    "notes": "已创建config.js并替换所有魔法数，修复了参数名冲突，使用parseIntOrDefault支持0值"
   },
   "deduplicate_code": {
     "core": "代码去重 - 卡死检测、清理逻辑统一管理",
     "priority": "P2",
     "files": ["src/main/executor.js", "src/main/scheduler.js"],
-    "approach": "1. 提取isTaskStale共享函数; 2. 提取forceUnlockTask共享函数; 3. 清理逻辑提取到utils",
+    "approach": "1) 抽取isTaskStale/forceUnlockTask/cleanupPaths到共享util并引用config；2) scheduler/executor改用共享函数替换重复实现；3) 保留调用方特有日志/指标通过参数注入；4) 增量替换并对比行为再删除旧实现；5) 补充单测覆盖公共函数。",
+    "dependencies": ["centralize_config", "fix_lock_atomicity"],
+    "risks": [
+      "重构遗漏特例导致行为回退",
+      "新util引入循环依赖",
+      "共享函数参数不全使调用方挂起或日志缺失"
+    ],
+    "test_points": [
+      "stale判定在不同入口返回一致",
+      "forceUnlock在locked/running/failed状态下表现一致",
+      "清理逻辑在scheduler与executor路径一致执行"
+    ],
+    "edge_cases": [
+      "任务缺少时间戳或状态字段",
+      "util被未来调用方误用（需防御性校验）",
+      "配置更新后util未同步使用新值"
+    ],
     "finish": false
   }
 }
