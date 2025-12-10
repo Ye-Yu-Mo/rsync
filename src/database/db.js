@@ -5,13 +5,23 @@ const crypto = require('crypto');
 
 let db;
 
-const keyHex = process.env.RSYNC_ENCRYPTION_KEY;
+let keyHex = process.env.RSYNC_ENCRYPTION_KEY;
+const isDevelopment = process.env.NODE_ENV === 'development';
+
 if (!keyHex) {
-  console.error('\n错误: RSYNC_ENCRYPTION_KEY环境变量未设置');
-  console.error('密码加密需要64字符的hex密钥（32字节）');
-  console.error('生成方式: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
-  console.error('设置方式: export RSYNC_ENCRYPTION_KEY=<生成的密钥>\n');
-  throw new Error('RSYNC_ENCRYPTION_KEY未设置，应用无法启动');
+  if (isDevelopment) {
+    keyHex = crypto.randomBytes(32).toString('hex');
+    console.warn('\n警告: 开发模式未设置RSYNC_ENCRYPTION_KEY，使用临时密钥');
+    console.warn('临时密钥: ' + keyHex);
+    console.warn('重启后所有加密数据将无法解密');
+    console.warn('生产环境请设置: export RSYNC_ENCRYPTION_KEY=<64字符hex密钥>\n');
+  } else {
+    console.error('\n错误: RSYNC_ENCRYPTION_KEY环境变量未设置');
+    console.error('密码加密需要64字符的hex密钥（32字节）');
+    console.error('生成方式: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+    console.error('设置方式: export RSYNC_ENCRYPTION_KEY=<生成的密钥>\n');
+    throw new Error('RSYNC_ENCRYPTION_KEY未设置，应用无法启动');
+  }
 }
 if (keyHex.length !== 64) {
   throw new Error(`RSYNC_ENCRYPTION_KEY长度错误: 需要64字符，当前${keyHex.length}字符`);
