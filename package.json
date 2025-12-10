@@ -6,7 +6,6 @@
   "scripts": {
     "start": "electron .",
     "dev": "NODE_ENV=development electron .",
-    "rebuild": "electron-rebuild",
     "build": "electron-builder",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -23,11 +22,10 @@
   },
   "homepage": "https://github.com/Ye-Yu-Mo/rsync#readme",
   "dependencies": {
-    "better-sqlite3": "^12.5.0",
-    "electron": "^39.2.6"
+    "better-sqlite3": "^12.5.0"
   },
   "devDependencies": {
-    "electron-builder": "^26.0.12",
-    "electron-rebuild": "^3.2.9"
+    "electron": "^39.2.6",
+    "electron-builder": "^26.0.12"
   }
 }
